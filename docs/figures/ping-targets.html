@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8">
+<style>
+  body{margin:0;background:#fff;font-family:"Noto Sans CJK JP","Noto Sans JP",sans-serif;color:#1f2328}
+  .wrap{padding:28px 32px;width:1036px}
+  table{border-collapse:collapse;width:100%;font-size:21px;line-height:1.5}
+  th{background:#f3f4f6;text-align:left;font-weight:700;padding:12px 16px;border-bottom:2px solid #d0d7de}
+  td{padding:12px 16px;border-bottom:1px solid #e5e7eb;vertical-align:top}
+  td:first-child,th:first-child{width:120px}
+  td:nth-child(2),th:nth-child(2){width:300px}
+  code{font-family:"Noto Sans Mono CJK JP",monospace;font-size:19px;background:#eef1f4;border-radius:4px;padding:1px 8px}
+  .host{font-weight:600}
+</style>
+<div class="wrap"><table>
+<tr><th>layer</th><th>宛先</th><th>見えること</th></tr>
+<tr><td><code>lan</code></td><td class="host">宅内ルータ</td><td>ここが悪ければ Wi-Fi・宅内 LAN の問題</td></tr>
+<tr><td><code>upstream</code></td><td class="host">上流のルータ（ONU/HGW）</td><td>宅内機器の問題</td></tr>
+<tr><td><code>internet</code></td><td class="host">1.1.1.1（Cloudflare）</td><td>Anycast で最寄り拠点に届く。「インターネットに出られるか」の基準</td></tr>
+<tr><td><code>internet</code></td><td class="host">8.8.8.8（Google）</td><td>別事業者。1.1.1.1 と同時に悪化したら回線側、片方だけなら相手側</td></tr>
+<tr><td><code>internet</code></td><td class="host">www.iij.ad.jp</td><td>国内の別 ISP 網（CDN じゃない）。国内 IX 経由の経路</td></tr>
+</table></div>

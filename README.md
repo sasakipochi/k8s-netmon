@@ -24,15 +24,7 @@
 - **生ログ**: 測定結果を JSON Lines でも保存 (PVC / hostPath)。ホストから直接 `jq` などで扱える
 - 非 root・ケーパビリティなし・読み取り専用ルートファイルシステムで動作。amd64 / arm64 対応
 
-```
-┌──────────────────────── namespace: netmon ────────────────────────┐
-│  netprobe (exporter)                                               │
-│   ├ ping: 5分ごと                       ── /metrics :9101 ──┐      │
-│   ├ speedtest: 毎時 :02:30              ── JSONL ──▶ PVC / hostPath
-│  Prometheus (30秒ごとに scrape, 400日保存) ◀────────────────┘      │
-│  Grafana (ダッシュボード自動登録)                                  │
-└──────────── Ingress / NodePort / port-forward で公開 ──────────────┘
-```
+![構成図 (k3s での例)](docs/architecture.png)
 
 ## クイックスタート
 
@@ -186,7 +178,8 @@ Prometheus / Grafana の PVC は `helm uninstall` しても残ります (`helm.s
 ```
 image/        netprobe (Python) と Dockerfile
 chart/netmon/ Helm チャート (dashboards/netmon.json は生成物)
-tools/        Grafana ダッシュボードの生成スクリプト
+tools/        Grafana ダッシュボード・図の生成スクリプト
+docs/         README の画像 (figures/ に構成図・表の元 HTML)
 tests/        ユニットテスト
 examples/     values の例
 ```
@@ -200,6 +193,7 @@ make            # イメージをビルド → localhost:5000 に push → helm 
 - ローカルの k3s では、k3s (containerd) が `localhost` のレジストリに HTTP で接続できるので、sudo や `registries.yaml` の設定なしでイメージを渡せます
 - `make` は `values-local.yaml` があればそれを、なければ `examples/values-k3s.yaml` を使います (`VALUES=...` で変更可)
 - ダッシュボードを変えるときは `tools/gen_dashboard.py` を編集して `make dashboard`
+- 構成図・表の画像は `docs/figures/*.html` を編集して `./tools/render_figures.sh` (Google Chrome / Chromium が必要)
 - exporter を変えたら `chart/netmon/Chart.yaml` の `version` / `appVersion` を上げる (`imagePullPolicy: IfNotPresent` のため)
 - `v<version>` タグを push すると GitHub Actions がイメージ (`ghcr.io/sasakipochi/netprobe`) とチャート (`oci://ghcr.io/sasakipochi/charts/netmon`) を公開します
 
