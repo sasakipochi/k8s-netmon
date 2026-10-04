@@ -1,0 +1,151 @@
+# netmon: インターネット接続品質モニタ
+# 環境固有の値 (ルータの IP、イメージの置き場所、ホスト名など) は別ファイルで上書きする。
+#   例: helm upgrade --install netmon ./chart/netmon -n netmon --create-namespace -f values-local.yaml
+
+# ------------------------------------------------------------------ 測定エクスポーター
+probe:
+  image:
+    repository: ghcr.io/sasakipochi/netprobe
+    tag: ""                     # 空なら Chart の appVersion
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+  # true にすると Pod ではなくホストのネットワーク名前空間から測定する (Pod ネットワークの影響を除ける)。
+  # その場合 ping_group_range の sysctl は設定できないので、ホスト側で許可されている必要がある (Ubuntu は既定で許可)。
+  hostNetwork: false
+
+  ping:
+    enabled: true
+    intervalSeconds: 300        # 5分ごと
+    count: 20                   # 1回の測定で送るパケット数
+    interval: 0.5               # パケット間隔 (秒)。20発 × 0.5秒 = 約10秒で1ラウンド
+    timeout: 2                  # 応答待ち (秒)
+    # layer: どの区間を見ているかの分類。ダッシュボードの並び・切り分けに使う
+    #   lan      … 宅内ルータ (Wi-Fi/LAN の問題を切り分ける)
+    #   upstream … ONU/HGW など宅内の上流機器
+    #   isp      … ISP 網内 (DNS サーバなど)
+    #   internet … インターネット上の到達先
+    targets:
+      - name: cloudflare-dns
+        host: 1.1.1.1
+        layer: internet
+      - name: google-dns
+        host: 8.8.8.8
+        layer: internet
+      - name: iij
+        host: www.iij.ad.jp
+        layer: internet
+
+  speedtest:
+    enabled: true
+    intervalSeconds: 3600       # 1時間ごと
+    offsetSeconds: 150          # 毎時 :02:30 に開始 (ping の 5分刻みと重ならないように)
+    runOnStart: false           # Pod 起動直後にも1回測るか
+    # Speedtest by Ookla CLI。プロプライエタリで個人・非商用利用のみ許諾されているため、イメージには含めず
+    # Pod 起動時に initContainer が install.speedtest.net から取得する。
+    # 使うには Ookla の EULA / 利用規約 / プライバシーポリシーを読んだうえで acceptLicense: true にすること。
+    #   https://www.speedtest.net/about/eula
+    #   https://www.speedtest.net/about/terms
+    #   https://www.speedtest.net/about/privacy
+    # 測定結果 (グローバル IP アドレスを含む) は Ookla に送信・保存される。
+    ookla:
+      enabled: false
+      acceptLicense: false
+      version: 1.2.0
+      serverId: ""              # 空なら自動選択。比較しやすくするには固定推奨 (speedtest -L で一覧)
+      timeout: 180
+    cloudflare:
+      enabled: true             # speed.cloudflare.com (アカウント・ライセンス不要)
+      streams: 4                # 並列接続数
+      duration: 10              # 上り/下りそれぞれの測定秒数
+
+  # 測定結果の生ログ (JSON Lines, 月ごとのファイル)
+  rawLog:
+    enabled: true
+    type: pvc                   # pvc | hostPath | emptyDir
+    hostPath: ""                # type=hostPath のときのホスト側ディレクトリ
+    size: 1Gi
+    storageClass: ""
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  resources:
+    requests: { cpu: 10m, memory: 48Mi }
+    limits: { memory: 256Mi }
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ------------------------------------------------------------------ Prometheus (同梱)
+# 既に Prometheus (kube-prometheus-stack 等) がある環境では enabled: false にし、serviceMonitor を使う
+prometheus:
+  enabled: true
+  image:
+    repository: prom/prometheus
+    tag: v3.15.0
+    pullPolicy: IfNotPresent
+  scrapeInterval: 30s
+  retention: 400d               # 1年分 + α。系列数が少ないので容量はごく小さい
+  retentionSize: 4GB
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+  service:
+    type: ClusterIP
+    port: 9090
+    nodePort: null
+  resources:
+    requests: { cpu: 20m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+# prometheus-operator 向け (prometheus.enabled: false の環境で使う)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}                    # 例: { release: kube-prometheus-stack }
+
+# ------------------------------------------------------------------ Grafana (同梱)
+grafana:
+  enabled: true
+  image:
+    repository: grafana/grafana
+    tag: 13.2.3
+    pullPolicy: IfNotPresent
+  adminUser: admin
+  adminPassword: ""             # 空なら初回インストール時にランダム生成して Secret に保存
+  anonymous:
+    enabled: true               # ログインなしでダッシュボードを閲覧可能にする (Viewer 権限)
+  # 同梱 Prometheus を使わない場合の接続先
+  externalPrometheusUrl: ""
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+  service:
+    type: ClusterIP
+    port: 3000
+    nodePort: null
+  resources:
+    requests: { cpu: 20m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+# 既存 Grafana の dashboard sidecar 向けに、ダッシュボード JSON を ConfigMap として出力する
+dashboardConfigMap:
+  enabled: false
+  labels:
+    grafana_dashboard: "1"
+
+# ------------------------------------------------------------------ Ingress
+ingress:
+  enabled: false
+  className: ""                 # k3s なら traefik
+  annotations: {}
+  grafanaHost: grafana.netmon.local
+  prometheusHost: ""            # 空なら Prometheus の Ingress は作らない
+  tls: []

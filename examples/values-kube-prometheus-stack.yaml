@@ -1,0 +1,23 @@
+# 既に kube-prometheus-stack (Prometheus Operator + Grafana) があるクラスタ向けの例。
+# 同梱の Prometheus / Grafana は作らず、ServiceMonitor とダッシュボード ConfigMap だけを出す。
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack   # Prometheus の serviceMonitorSelector に合わせる
+
+dashboardConfigMap:
+  enabled: true                      # Grafana の dashboard sidecar が拾う
+  labels:
+    grafana_dashboard: "1"
+
+probe:
+  ping:
+    targets:
+      - { name: cloudflare-dns, host: 1.1.1.1,       layer: internet }
+      - { name: google-dns,     host: 8.8.8.8,       layer: internet }
+      - { name: iij,            host: www.iij.ad.jp, layer: internet }

@@ -1,0 +1,168 @@
+{{- if .Values.grafana.enabled }}
+{{- $v := .Values.grafana -}}
+{{- $fn := include "netmon.fullname" . -}}
+{{- $secretName := printf "%s-grafana" $fn -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+type: Opaque
+data:
+  admin-user: {{ $v.adminUser | b64enc }}
+  {{- if $v.adminPassword }}
+  admin-password: {{ $v.adminPassword | b64enc }}
+  {{- else if and $existing (index $existing.data "admin-password") }}
+  # 既存の自動生成パスワードを upgrade で変えない
+  admin-password: {{ index $existing.data "admin-password" }}
+  {{- else }}
+  admin-password: {{ randAlphaNum 24 | b64enc }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fn }}-grafana-provisioning
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: netmon-prometheus
+        type: prometheus
+        access: proxy
+        url: {{ include "netmon.prometheusUrl" . }}
+        isDefault: true
+        jsonData:
+          timeInterval: {{ .Values.prometheus.scrapeInterval }}
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: netmon
+        folder: netmon
+        type: file
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards/netmon
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fn }}-grafana-dashboards
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+data:
+  {{- (.Files.Glob "dashboards/*.json").AsConfig | nindent 2 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-grafana
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+    {{- include "netmon.selector" (list . "grafana") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate      # SQLite (PVC) を同時に2プロセスから開かない
+  selector:
+    matchLabels:
+      {{- include "netmon.selector" (list . "grafana") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "netmon.labels" . | nindent 8 }}
+        {{- include "netmon.selector" (list . "grafana") | nindent 8 }}
+      annotations:
+        checksum/dashboards: {{ (.Files.Glob "dashboards/*.json").AsConfig | sha256sum }}
+        checksum/values: {{ toJson $v | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: grafana
+          image: "{{ $v.image.repository }}:{{ $v.image.tag }}"
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom: { secretKeyRef: { name: {{ $secretName }}, key: admin-user } }
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $secretName }}, key: admin-password } }
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: {{ $v.anonymous.enabled | quote }}
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Viewer
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /var/lib/grafana/dashboards/netmon/netmon.json
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            - name: GF_NEWS_NEWS_FEED_ENABLED
+              value: "false"
+            - name: GF_DATE_FORMATS_DEFAULT_TIMEZONE
+              value: browser
+            {{- if and .Values.ingress.enabled .Values.ingress.grafanaHost }}
+            - name: GF_SERVER_ROOT_URL
+              value: "http://{{ .Values.ingress.grafanaHost }}/"
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - { name: storage, mountPath: /var/lib/grafana }
+            - { name: provisioning, mountPath: /etc/grafana/provisioning/datasources/netmon.yaml, subPath: datasources.yaml, readOnly: true }
+            - { name: provisioning, mountPath: /etc/grafana/provisioning/dashboards/netmon.yaml, subPath: dashboards.yaml, readOnly: true }
+            - { name: dashboards, mountPath: /var/lib/grafana/dashboards/netmon, readOnly: true }
+      volumes:
+        - name: storage
+          {{- if $v.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $fn }}-grafana
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: provisioning
+          configMap:
+            name: {{ $fn }}-grafana-provisioning
+        - name: dashboards
+          configMap:
+            name: {{ $fn }}-grafana-dashboards
+---
+{{ include "netmon.service" (dict "ctx" . "name" "grafana" "s" $v.service) }}
+{{- if $v.persistence.enabled }}
+---
+{{ include "netmon.pvc" (dict "ctx" . "name" "grafana" "p" $v.persistence) }}
+{{- end }}
+{{- end }}
+{{- if .Values.dashboardConfigMap.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "netmon.fullname" . }}-dashboard
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+    {{- toYaml .Values.dashboardConfigMap.labels | nindent 4 }}
+data:
+  {{- (.Files.Glob "dashboards/*.json").AsConfig | nindent 2 }}
+{{- end }}

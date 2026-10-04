@@ -1,0 +1,144 @@
+{{- if .Values.prometheus.enabled }}
+{{- $v := .Values.prometheus -}}
+{{- $fn := include "netmon.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fn }}-prometheus
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ $v.scrapeInterval }}
+      evaluation_interval: 1m
+    rule_files:
+      - /etc/prometheus/rules.yml
+    scrape_configs:
+      - job_name: netprobe
+        static_configs:
+          - targets: ["{{ $fn }}-probe:9101"]
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+  rules.yml: |
+    groups:
+      - name: netprobe
+        rules:
+          # Grafana を使わず Prometheus の Alerts 画面だけでも異常に気づけるようにしておく
+          - alert: NetprobeDown
+            expr: up{job="netprobe"} == 0
+            for: 10m
+          - alert: InternetUnreachable
+            expr: max by (layer) (netprobe_ping_up{layer="internet"}) == 0
+            for: 1m
+            annotations:
+              summary: インターネット上のすべての ping 先に到達できない
+          - alert: HighPacketLoss
+            expr: netprobe_ping_loss_ratio > 0.05
+            for: 15m
+            annotations:
+              summary: "{{`{{ $labels.target }}`}} へのパケット損失率が 5% を超えている"
+          - alert: SpeedtestFailing
+            expr: netprobe_speedtest_success == 0
+            for: 2h
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-prometheus
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+    {{- include "netmon.selector" (list . "prometheus") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate      # TSDB は同時に2プロセスから開けない
+  selector:
+    matchLabels:
+      {{- include "netmon.selector" (list . "prometheus") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "netmon.labels" . | nindent 8 }}
+        {{- include "netmon.selector" (list . "prometheus") | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: prometheus
+          image: "{{ $v.image.repository }}:{{ $v.image.tag }}"
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time={{ $v.retention }}
+            - --storage.tsdb.retention.size={{ $v.retentionSize }}
+            - --web.enable-lifecycle
+            {{- if and .Values.ingress.enabled .Values.ingress.prometheusHost }}
+            - --web.external-url=http://{{ .Values.ingress.prometheusHost }}/
+            - --web.route-prefix=/
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus, readOnly: true }
+            - { name: data, mountPath: /prometheus }
+        # ConfigMap の変更を検知してリロードする (Prometheus 単体には監視機能がない)
+        - name: config-reloader
+          image: "{{ $v.image.repository }}:{{ $v.image.tag }}"
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              last=$(cat /etc/prometheus/*.yml | md5sum)
+              while true; do
+                sleep 30
+                cur=$(cat /etc/prometheus/*.yml | md5sum)
+                if [ "$cur" != "$last" ]; then
+                  wget -q -O- --post-data= http://localhost:9090/-/reload && last=$cur
+                fi
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits: { memory: 32Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus, readOnly: true }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fn }}-prometheus
+        - name: data
+          {{- if $v.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $fn }}-prometheus
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+{{ include "netmon.service" (dict "ctx" . "name" "prometheus" "s" $v.service) }}
+{{- if $v.persistence.enabled }}
+---
+{{ include "netmon.pvc" (dict "ctx" . "name" "prometheus" "p" $v.persistence) }}
+{{- end }}
+{{- end }}

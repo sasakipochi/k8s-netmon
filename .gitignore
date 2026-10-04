@@ -1,0 +1,9 @@
+# 測定データ・ビルド成果物
+/data/
+/dist/
+__pycache__/
+*.pyc
+
+# 個人環境用の設定・作業記録 (自宅ネットワークの情報を含む)
+/values-local*.yaml
+/worklog.md

@@ -1,0 +1,171 @@
+{{- $p := .Values.probe -}}
+{{- $fn := include "netmon.fullname" . -}}
+{{- $ookla := and $p.speedtest.enabled $p.speedtest.ookla.enabled -}}
+{{- if and $ookla (not $p.speedtest.ookla.acceptLicense) -}}
+{{- fail "probe.speedtest.ookla.enabled=true requires probe.speedtest.ookla.acceptLicense=true (read https://www.speedtest.net/about/eula first)" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fn }}-probe
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+data:
+  config.json: |
+    {{- dict
+        "port" 9101
+        "rawLogDir" (ternary "/data" "" $p.rawLog.enabled)
+        "ping" $p.ping
+        "speedtest" (dict
+          "enabled" $p.speedtest.enabled
+          "intervalSeconds" $p.speedtest.intervalSeconds
+          "offsetSeconds" $p.speedtest.offsetSeconds
+          "runOnStart" $p.speedtest.runOnStart
+          "backends" (dict "ookla" (merge (dict "binary" "/opt/ookla/speedtest") $p.speedtest.ookla) "cloudflare" $p.speedtest.cloudflare))
+      | toPrettyJson | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-probe
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+    {{- include "netmon.selector" (list . "probe") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate      # 測定が二重に走らないように
+  selector:
+    matchLabels:
+      {{- include "netmon.selector" (list . "probe") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "netmon.labels" . | nindent 8 }}
+        {{- include "netmon.selector" (list . "probe") | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson $p | sha256sum }}
+    spec:
+      hostNetwork: {{ $p.hostNetwork }}
+      {{- if $p.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with $p.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $p.podSecurityContext | nindent 8 }}
+        {{- if not $p.hostNetwork }}
+        sysctls:
+          # root 権限・NET_RAW なしで ping (ICMP datagram socket) を使えるようにする
+          - name: net.ipv4.ping_group_range
+            value: "0 2147483647"
+        {{- end }}
+      {{- if $ookla }}
+      initContainers:
+        # Ookla Speedtest CLI を取得する (ライセンス上イメージに同梱できないため)
+        - name: fetch-ookla
+          image: "{{ $p.image.repository }}:{{ $p.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $p.image.pullPolicy }}
+          args: ["fetch-ookla", "/opt/ookla", {{ $p.speedtest.ookla.version | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: ookla, mountPath: /opt/ookla }
+      {{- end }}
+      containers:
+        - name: netprobe
+          image: "{{ $p.image.repository }}:{{ $p.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $p.image.pullPolicy }}
+          env:
+            - name: TZ
+              value: UTC
+          ports:
+            - name: http
+              containerPort: 9101
+          readinessProbe:
+            httpGet: { path: /metrics, port: http }
+          livenessProbe:
+            httpGet: { path: /metrics, port: http }
+            periodSeconds: 30
+          securityContext:
+            readOnlyRootFilesystem: true
+            {{- if $p.hostNetwork }}
+            # ホストの ping_group_range が一般ユーザーの ICMP を許可していない場合に備え、
+            # ping バイナリのファイルケーパビリティ (cap_net_raw) で raw socket を使う
+            allowPrivilegeEscalation: true
+            capabilities: { drop: [ALL], add: [NET_RAW] }
+            {{- else }}
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            {{- end }}
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/netprobe, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            {{- if $ookla }}
+            - { name: ookla, mountPath: /opt/ookla, readOnly: true }
+            {{- end }}
+            {{- if $p.rawLog.enabled }}
+            - { name: data, mountPath: /data }
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fn }}-probe
+        - name: tmp
+          emptyDir: {}
+        {{- if $ookla }}
+        - name: ookla
+          emptyDir: {}
+        {{- end }}
+        {{- if $p.rawLog.enabled }}
+        - name: data
+          {{- if eq $p.rawLog.type "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ $fn }}-probe-data
+          {{- else if eq $p.rawLog.type "hostPath" }}
+          hostPath:
+            path: {{ required "probe.rawLog.hostPath is required for type=hostPath" $p.rawLog.hostPath }}
+            type: DirectoryOrCreate
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+      {{- with $p.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{ include "netmon.service" (dict "ctx" . "name" "probe" "s" (dict "type" "ClusterIP" "port" 9101)) }}
+{{- if and $p.rawLog.enabled (eq $p.rawLog.type "pvc") }}
+---
+{{ include "netmon.pvc" (dict "ctx" . "name" "probe-data" "p" $p.rawLog) }}
+{{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fn }}-probe
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "netmon.selector" (list . "probe") | nindent 6 }}
+  endpoints:
+    - port: http
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

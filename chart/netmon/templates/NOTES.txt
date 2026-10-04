@@ -1,0 +1,31 @@
+netmon をデプロイしました。
+
+{{- if .Values.grafana.enabled }}
+
+■ Grafana
+{{- if and .Values.ingress.enabled .Values.ingress.grafanaHost }}
+  http://{{ .Values.ingress.grafanaHost }}/
+{{- else if eq .Values.grafana.service.type "NodePort" }}
+  http://<ノードのIP>:{{ .Values.grafana.service.nodePort | default "(自動割当: kubectl get svc で確認)" }}/
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "netmon.fullname" . }}-grafana 3000:{{ .Values.grafana.service.port }}
+  → http://localhost:3000/
+{{- end }}
+  管理者パスワード:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "netmon.fullname" . }}-grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
+{{- end }}
+{{- if .Values.prometheus.enabled }}
+
+■ Prometheus
+{{- if and .Values.ingress.enabled .Values.ingress.prometheusHost }}
+  http://{{ .Values.ingress.prometheusHost }}/
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "netmon.fullname" . }}-prometheus 9090:{{ .Values.prometheus.service.port }}
+{{- end }}
+{{- end }}
+
+■ 測定値 (exporter)
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "netmon.fullname" . }}-probe -f
+{{- if and .Values.probe.rawLog.enabled (eq .Values.probe.rawLog.type "hostPath") }}
+  生ログ (JSON Lines): ノード上の {{ .Values.probe.rawLog.hostPath }}
+{{- end }}

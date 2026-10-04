@@ -1,0 +1,13 @@
+apiVersion: v2
+name: netmon
+description: Internet connection quality monitor (ping + speedtest exporter, Prometheus, Grafana)
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+keywords: [ping, speedtest, prometheus, grafana, network, monitoring]
+home: https://github.com/sasakipochi/k8s-netmon
+sources:
+  - https://github.com/sasakipochi/k8s-netmon
+maintainers:
+  - name: SASAKI Ken
+    url: https://github.com/sasakipochi

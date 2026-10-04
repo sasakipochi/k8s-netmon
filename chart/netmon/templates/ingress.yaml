@@ -1,0 +1,35 @@
+{{- if .Values.ingress.enabled }}
+{{- $fn := include "netmon.fullname" . -}}
+{{- $hosts := list -}}
+{{- if and .Values.grafana.enabled .Values.ingress.grafanaHost }}{{ $hosts = append $hosts (list .Values.ingress.grafanaHost "grafana" .Values.grafana.service.port) }}{{ end -}}
+{{- if and .Values.prometheus.enabled .Values.ingress.prometheusHost }}{{ $hosts = append $hosts (list .Values.ingress.prometheusHost "prometheus" .Values.prometheus.service.port) }}{{ end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fn }}
+  labels:
+    {{- include "netmon.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range $hosts }}
+    - host: {{ index . 0 }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fn }}-{{ index . 1 }}
+                port:
+                  number: {{ index . 2 }}
+    {{- end }}
+{{- end }}

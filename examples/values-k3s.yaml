@@ -1,0 +1,35 @@
+# シングルノードの k3s (自宅の常時起動 PC / Raspberry Pi など) 向けの例
+#   helm upgrade --install netmon oci://ghcr.io/sasakipochi/charts/netmon -n netmon --create-namespace -f values-k3s.yaml
+probe:
+  ping:
+    targets:
+      # 宅内ルータと、あれば上流機器 (ONU/HGW) を足すと「宅内か回線か」を切り分けられる。
+      # 経路は `tracepath -n 1.1.1.1` で確認できる
+      - { name: router,         host: 192.168.1.1,   layer: lan }
+      - { name: cloudflare-dns, host: 1.1.1.1,       layer: internet }
+      - { name: google-dns,     host: 8.8.8.8,       layer: internet }
+      - { name: iij,            host: www.iij.ad.jp, layer: internet }
+  speedtest:
+    runOnStart: true
+    # Ookla を使う場合は EULA を読んだうえで両方 true にする (values.yaml のコメント参照)
+    ookla:
+      enabled: false
+      acceptLicense: false
+  # 生ログ (JSON Lines) をホストのディレクトリに書き出す
+  rawLog:
+    type: hostPath
+    hostPath: /srv/netmon/data
+  # hostPath に書くファイルの所有者 (ホストのユーザーの uid/gid に合わせる)
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile: { type: RuntimeDefault }
+
+# k3s 同梱の Traefik で公開。*.localhost はブラウザが 127.0.0.1 に解決する
+ingress:
+  enabled: true
+  className: traefik
+  grafanaHost: grafana.netmon.localhost
+  prometheusHost: prometheus.netmon.localhost
